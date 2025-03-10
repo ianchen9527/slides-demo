@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useState } from "react"
 import { useParams } from "react-router-dom"
 import { getDoc, doc, setDoc } from "firebase/firestore"
-import { db } from "../firebase"
+import { ref, set, onValue } from "firebase/database"
+import { db, rtdb } from "../firebase"
 import AtBoard from "./AtBoard"
 
 const SlideViewer = () => {
@@ -31,7 +32,7 @@ const SlideViewer = () => {
     })
 
     setNotes(notesJson)
-    console.log("✅ 載入的 Notes:", notes)
+    console.log("✅ 載入的 Notes:", notesJson)
   }, [])
 
   // 讀取 Firestore 的投影片資料
@@ -58,6 +59,38 @@ const SlideViewer = () => {
     fetchSlideData()
   }, [slideId, fetchNotes])
 
+  // 🔥 訂閱 Firebase Realtime Database 來同步翻頁
+  useEffect(() => {
+    if (!slideId) return
+    const pageRef = ref(rtdb, `slides/${slideId}/currentPage`)
+
+    const unsubscribe = onValue(pageRef, (snapshot) => {
+      if (snapshot.exists()) {
+        setCurrentPage(snapshot.val())
+      }
+    })
+
+    return () => unsubscribe()
+  }, [slideId])
+
+  // 🔥 訂閱 Firebase Realtime Database 來同步白板內容
+  useEffect(() => {
+    console.log("DEBUG", currentPage, notes[currentPage])
+
+    if (!slideId) return
+    const notesRef = ref(rtdb, `slides/${slideId}/notes/${currentPage}`)
+
+    const unsubscribe = onValue(notesRef, (snapshot) => {
+      if (snapshot.exists()) {
+        const newNotes = [...notes]
+        newNotes[currentPage] = JSON.parse(snapshot.val())
+        setNotes(newNotes)
+      }
+    })
+
+    return () => unsubscribe()
+  }, [slideId, currentPage])
+
   // 🔥 優化筆記更新機制
   const handleWhiteboardChange = async (elements, pageIndex) => {
     if (!slideData || !slideData.pages[pageIndex]?.note) {
@@ -67,10 +100,12 @@ const SlideViewer = () => {
 
     const elementsJSON = JSON.stringify(elements)
     if (elementsJSON === JSON.stringify(notes[pageIndex])) return
+    const notesRef = ref(rtdb, `slides/${slideId}/notes/${currentPage}`)
 
     const noteRef = slideData.pages[pageIndex].note
 
     try {
+      await set(notesRef, elementsJSON)
       await setDoc(noteRef, { elements: elementsJSON }, { merge: true })
       const newNotes = [...notes]
       newNotes[pageIndex] = elements
@@ -85,16 +120,30 @@ const SlideViewer = () => {
   const handleNextPage = () => {
     if (!slideData || !slideData.pages) return
     if (currentPage < slideData.pages.length - 1) {
-      setCurrentPage((prev) => prev + 1)
+      const nextPage = currentPage + 1
+      setCurrentPage(nextPage)
+
+      // 🔥 同步翻頁至 Firebase
+      const pageRef = ref(rtdb, `slides/${slideId}/currentPage`)
+      set(pageRef, nextPage)
     }
   }
 
   const handlePrevPage = () => {
     if (!slideData || !slideData.pages) return
     if (currentPage > 0) {
-      setCurrentPage((prev) => prev - 1)
+      const prevPage = currentPage - 1
+      setCurrentPage(prevPage)
+
+      // 🔥 同步翻頁至 Firebase
+      const pageRef = ref(rtdb, `slides/${slideId}/currentPage`)
+      set(pageRef, prevPage)
     }
   }
+
+  useEffect(() => {
+    console.log("NOTES!", notes)
+  }, [notes])
 
   if (
     !slideData ||

@@ -7,6 +7,7 @@ function AtBoard({ initialData, onChange }) {
   const [prevElements, setPrevElements] = useState([])
 
   useEffect(() => {
+    console.log("🎨 初始化畫布資料:", initialData)
     if (excalidrawAPI && initialData) {
       excalidrawAPI.updateScene({ elements: initialData })
       setPrevElements(initialData)
