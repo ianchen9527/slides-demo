@@ -1,47 +1,38 @@
-import React, { useEffect, useState, useCallback } from "react"
+import React, { useCallback, useEffect, useState } from "react"
 import { Excalidraw } from "@excalidraw/excalidraw"
-import { debounce } from "lodash"
 
-function AtBoard({ initialData, onChange }) {
+function AtBoard({ note, collaborators, onChange, onMouseMove }) {
   const [excalidrawAPI, setExcalidrawAPI] = useState(null)
-  const [prevElements, setPrevElements] = useState([])
 
+  // 更新畫面上的筆記
   useEffect(() => {
-    console.log("🎨 初始化畫布資料:", initialData)
-    if (excalidrawAPI && initialData) {
-      excalidrawAPI.updateScene({ elements: initialData })
-      setPrevElements(initialData)
-    }
-  }, [excalidrawAPI, initialData])
+    if (!note) return
+    if (!excalidrawAPI) return
+    excalidrawAPI.updateScene({ elements: note })
+  }, [excalidrawAPI, note])
 
-  // 🔥 過濾不必要的屬性，僅保留關鍵資訊
-  const filterElements = (elements) => {
-    return elements.map(({ id, type, x, y, width, height, strokeColor }) => ({
-      id,
-      type,
-      x,
-      y,
-      width,
-      height,
-      strokeColor,
-    }))
-  }
+  // 更新畫面上的協作者
+  useEffect(() => {
+    if (!collaborators) return
+    if (!excalidrawAPI) return
+    excalidrawAPI.updateScene({
+      collaborators: new Map(Object.entries(collaborators)),
+    })
+  }, [collaborators, excalidrawAPI])
 
-  // ✅ Debounce 優化 & 避免重複上傳
-  const handleDebouncedChange = useCallback(
-    debounce((elements) => {
-      const filteredElements = filterElements(elements)
-      const filteredPrevElements = filterElements(prevElements)
-
-      if (
-        JSON.stringify(filteredElements) !==
-        JSON.stringify(filteredPrevElements)
-      ) {
-        setPrevElements(filteredElements)
-        onChange(elements)
-      }
-    }, 500), // 1 秒內無變動才上傳
-    [prevElements, onChange]
+  // 處理滑鼠移動事件
+  const onPointerUpdate = useCallback(
+    ({ pointer, button }) => {
+      if (!excalidrawAPI) return
+      // 傳遞滑鼠移動事件到外部
+      onMouseMove({ pointer, button })
+      // 如果滑鼠按鍵不是按下，就不需要更新筆記
+      // 如果是就外傳變更的筆記到外部
+      if (button !== "down") return
+      const elements = excalidrawAPI.getSceneElementsIncludingDeleted()
+      onChange(elements)
+    },
+    [excalidrawAPI, onChange, onMouseMove]
   )
 
   return (
@@ -58,9 +49,8 @@ function AtBoard({ initialData, onChange }) {
         excalidrawAPI={(api) => setExcalidrawAPI(api)}
         initialData={{
           appState: { viewBackgroundColor: "transparent" },
-          elements: initialData || [],
         }}
-        onChange={handleDebouncedChange} // 使用 debounce 處理變更
+        onPointerUpdate={onPointerUpdate}
       />
     </div>
   )

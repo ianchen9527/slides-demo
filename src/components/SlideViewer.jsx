@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useState } from "react"
+import React, { useEffect, useState } from "react"
 import { useParams } from "react-router-dom"
-import { getDoc, doc, setDoc } from "firebase/firestore"
+import { getDoc, doc } from "firebase/firestore"
 import { ref, set, onValue } from "firebase/database"
 import { db, rtdb } from "../firebase"
 import AtBoard from "./AtBoard"
@@ -8,32 +8,11 @@ import AtBoard from "./AtBoard"
 const SlideViewer = () => {
   const [slideData, setSlideData] = useState(null)
   const [currentPage, setCurrentPage] = useState(0)
-  const [notes, setNotes] = useState([])
+  const [note, setNote] = useState([])
   const [initializing, setInitializing] = useState(true)
+  const [randomUserId, setRandomUserId] = useState(null)
+  const [collaborators, setCollaborators] = useState({})
   const { id: slideId } = useParams()
-
-  const fetchNotes = useCallback(async (slideInfo) => {
-    const noteRefs = slideInfo.pages.map((page) => page.note)
-    const notes = await Promise.all(
-      noteRefs.map(async (noteRef) => {
-        const noteSnap = await getDoc(noteRef)
-        return noteSnap.data()
-      })
-    )
-
-    const notesJson = notes.map((note) => {
-      if (!note || !note.elements) return []
-      try {
-        return JSON.parse(note.elements)
-      } catch (error) {
-        console.error("❌ 解析 JSON 錯誤:", error)
-        return []
-      }
-    })
-
-    setNotes(notesJson)
-    console.log("✅ 載入的 Notes:", notesJson)
-  }, [])
 
   // 讀取 Firestore 的投影片資料
   useEffect(() => {
@@ -53,17 +32,44 @@ const SlideViewer = () => {
       } else {
         console.warn("投影片沒有內容")
       }
-      await fetchNotes(slideInfo)
       setInitializing(false)
+      setRandomUserId(Math.random().toString(36).substring(7))
     }
     fetchSlideData()
-  }, [slideId, fetchNotes])
+  }, [slideId])
+
+  // 訂閱 Firebase Realtime Database 來同步協作者
+  useEffect(() => {
+    if (!slideId) return
+    const collaboratorsRef = ref(rtdb, `slides/${slideId}/collaborators`)
+    const unsubscribe = onValue(collaboratorsRef, (snapshot) => {
+      if (!snapshot.exists()) return
+      const collaborators = snapshot.val()
+      const collaboratorsWithoutSelf = Object.fromEntries(
+        Object.entries(collaborators).filter(([key]) => key !== randomUserId)
+      )
+      setCollaborators(collaboratorsWithoutSelf)
+    })
+    return () => unsubscribe()
+  }, [slideId, randomUserId])
+
+  // 更新協作者的畫筆位置
+  const onMouseMove = ({ pointer, button }) => {
+    const collaboratorsRef = ref(
+      rtdb,
+      `slides/${slideId}/collaborators/${randomUserId}`
+    )
+    set(collaboratorsRef, {
+      pointer: { ...pointer },
+      button,
+      username: randomUserId,
+    })
+  }
 
   // 🔥 訂閱 Firebase Realtime Database 來同步翻頁
   useEffect(() => {
     if (!slideId) return
     const pageRef = ref(rtdb, `slides/${slideId}/currentPage`)
-
     const unsubscribe = onValue(pageRef, (snapshot) => {
       if (snapshot.exists()) {
         setCurrentPage(snapshot.val())
@@ -75,45 +81,25 @@ const SlideViewer = () => {
 
   // 🔥 訂閱 Firebase Realtime Database 來同步白板內容
   useEffect(() => {
-    console.log("DEBUG", currentPage, notes[currentPage])
-
     if (!slideId) return
     const notesRef = ref(rtdb, `slides/${slideId}/notes/${currentPage}`)
-
     const unsubscribe = onValue(notesRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const newNotes = [...notes]
-        newNotes[currentPage] = JSON.parse(snapshot.val())
-        setNotes(newNotes)
-      }
+      if (!snapshot.exists()) return
+      if (snapshot.val() === note) return
+      const remoteNote = snapshot.val()
+      if (remoteNote.sender === randomUserId) return
+      setNote(JSON.parse(remoteNote.elements))
     })
-
     return () => unsubscribe()
-  }, [slideId, currentPage])
+  }, [slideId, currentPage, note, randomUserId])
 
   // 🔥 優化筆記更新機制
-  const handleWhiteboardChange = async (elements, pageIndex) => {
-    if (!slideData || !slideData.pages[pageIndex]?.note) {
-      console.error("❌ 找不到 note Reference，無法儲存筆記")
-      return
-    }
-
-    const elementsJSON = JSON.stringify(elements)
-    if (elementsJSON === JSON.stringify(notes[pageIndex])) return
-    const notesRef = ref(rtdb, `slides/${slideId}/notes/${currentPage}`)
-
-    const noteRef = slideData.pages[pageIndex].note
-
-    try {
-      await set(notesRef, elementsJSON)
-      await setDoc(noteRef, { elements: elementsJSON }, { merge: true })
-      const newNotes = [...notes]
-      newNotes[pageIndex] = elements
-      setNotes(newNotes)
-      console.log("✅ 筆記已儲存到 `notes` Collection", noteRef)
-    } catch (error) {
-      console.error("🔥 Firebase setDoc 錯誤:", error)
-    }
+  const handleWhiteboardChange = async (elements) => {
+    const noteRef = ref(rtdb, `slides/${slideId}/notes/${currentPage}`)
+    await set(noteRef, {
+      elements: JSON.stringify(elements),
+      sender: randomUserId,
+    })
   }
 
   // 處理翻頁邏輯
@@ -140,10 +126,6 @@ const SlideViewer = () => {
       set(pageRef, prevPage)
     }
   }
-
-  useEffect(() => {
-    console.log("NOTES!", notes)
-  }, [notes])
 
   if (
     !slideData ||
@@ -183,7 +165,9 @@ const SlideViewer = () => {
             }}
           />
           <AtBoard
-            initialData={notes[currentPage]}
+            note={note}
+            collaborators={collaborators}
+            onMouseMove={onMouseMove}
             onChange={(elements) =>
               handleWhiteboardChange(elements, currentPage)
             }
